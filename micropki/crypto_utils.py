@@ -1,118 +1,93 @@
+from __future__ import annotations
 import os
-import secrets
-from datetime import datetime, timedelta, timezone
-
+from pathlib import Path
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa, ec
-from cryptography.x509.oid import NameOID
-
-
-def parse_dn(dn_str: str) -> x509.Name:
-    attributes = []
-    if dn_str.startswith("/"):
-        parts = dn_str[1:].split("/")
-    else:
-        parts = [p.strip() for p in dn_str.split(",")]
-
-    for part in parts:
-        if "=" not in part:
-            continue
-        key, value = [x.strip() for x in part.split("=", 1)]
-        key = key.upper()
-        if key == "CN":
-            attributes.append(x509.NameAttribute(NameOID.COMMON_NAME, value))
-        elif key == "O":
-            attributes.append(x509.NameAttribute(NameOID.ORGANIZATION_NAME, value))
-        elif key == "C":
-            attributes.append(x509.NameAttribute(NameOID.COUNTRY_NAME, value))
-    if not attributes:
-        raise ValueError("Invalid or empty subject DN")
-    return x509.Name(attributes)
-
-
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+def make_serial() -> int:
+    serial = int.from_bytes(os.urandom(19), "big")
+    return serial if serial > 0 else 1
+def signing_algorithm(key) -> hashes.HashAlgorithm:
+    if isinstance(key, (rsa.RSAPrivateKey, rsa.RSAPublicKey)):
+        return hashes.SHA256()
+    return hashes.SHA384()
 def generate_key(key_type: str, key_size: int):
     if key_type == "rsa":
         return rsa.generate_private_key(public_exponent=65537, key_size=key_size)
-    elif key_type == "ecc":
-        return ec.generate_private_key(ec.SECP384R1())
-    raise ValueError("Unsupported key-type")
-
-
-def create_self_signed_cert(private_key, subject_str: str, validity_days: int):
-    subject = parse_dn(subject_str)
-    serial = secrets.randbits(128) 
-    not_before = datetime.now(timezone.utc)
-    not_after = not_before + timedelta(days=validity_days)
-
-    if isinstance(private_key, rsa.RSAPrivateKey):
-        hash_alg = hashes.SHA256()
+    if key_type == "ecc":
+        curves = {256: ec.SECP256R1(), 384: ec.SECP384R1()}
+        curve = curves.get(key_size)
+        if curve is None:
+            raise ValueError(f"Unsupported ECC curve size: {key_size}. Must be 256 or 384.")
+        return ec.generate_private_key(curve)
+    raise ValueError(f"Unsupported key type: {key_type}")
+def verify_cert_signature(cert: x509.Certificate, issuer_cert: x509.Certificate) -> None:
+    pub = issuer_cert.public_key()
+    if isinstance(pub, rsa.RSAPublicKey):
+        pub.verify(cert.signature, cert.tbs_certificate_bytes,
+                    padding.PKCS1v15(), cert.signature_hash_algorithm)
     else:
-        hash_alg = hashes.SHA384()
-
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(subject)
-        .public_key(private_key.public_key())
-        .serial_number(serial)
-        .not_valid_before(not_before)
-        .not_valid_after(not_after)
-        .add_extension(
-            x509.BasicConstraints(ca=True, path_length=None),
-            critical=True,
-        )
-        .add_extension(
-            x509.KeyUsage(
-                digital_signature=True,
-                key_cert_sign=True,
-                crl_sign=True,
-                content_commitment=False,
-                key_encipherment=False,
-                data_encipherment=False,
-                key_agreement=False,
-                encipher_only=False,
-                decipher_only=False,
-            ),
-            critical=True,
-        )
-        .add_extension(
-            x509.SubjectKeyIdentifier.from_public_key(private_key.public_key()),
-            critical=False,
-        )
-        .add_extension(
-            x509.AuthorityKeyIdentifier.from_issuer_public_key(private_key.public_key()),
-            critical=False,
-        )
-        .sign(private_key, hash_alg)
-    )
-    return cert
-
-
-def save_encrypted_key(private_key, passphrase: bytes, path: str):
-    encryption = serialization.BestAvailableEncryption(passphrase)
-    pem = private_key.private_bytes(
+        pub.verify(cert.signature, cert.tbs_certificate_bytes,
+                    ec.ECDSA(cert.signature_hash_algorithm))
+def is_rsa_key(key) -> bool:
+    return isinstance(key, (rsa.RSAPrivateKey, rsa.RSAPublicKey))
+def load_passphrase(path: str) -> bytes:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Passphrase file not found: {path}")
+    if not p.is_file():
+        raise ValueError(f"Not a file: {path}")
+    return p.read_bytes().rstrip(b"\n\r")
+def generate_rsa_key(bits: int = 4096) -> rsa.RSAPrivateKey:
+    return generate_key("rsa", bits)
+def generate_ecc_key(curve_bits: int = 384):
+    if curve_bits not in (256, 384):
+        raise ValueError("Only P-256 (256) and P-384 (384) are supported for ECC")
+    return generate_key("ecc", curve_bits)
+def private_key_to_pem_encrypted(key, passphrase: bytes) -> bytes:
+    return key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=encryption,
+        encryption_algorithm=serialization.BestAvailableEncryption(passphrase),
     )
-    with open(path, "wb") as f:
-        f.write(pem)
-
-
-def save_cert(cert, path: str):
-    pem = cert.public_bytes(serialization.Encoding.PEM)
-    with open(path, "wb") as f:
-        f.write(pem)
-
-
-def ensure_pki_dirs(out_dir: str, logger):
-    private_dir = os.path.join(out_dir, "private")
-    certs_dir = os.path.join(out_dir, "certs")
-    os.makedirs(private_dir, exist_ok=True)
-    os.makedirs(certs_dir, exist_ok=True)
+def private_key_to_pem_unencrypted(key) -> bytes:
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+def cert_to_pem(cert) -> bytes:
+    return cert.public_bytes(serialization.Encoding.PEM)
+def _set_permissions(path_obj: Path, mode: int, logger=None) -> None:
     try:
-        os.chmod(private_dir, 0o700)
+        path_obj.chmod(mode)
     except OSError:
-        logger.warning("Cannot set 0o700 on private/ (Windows OK)")
-    return private_dir, certs_dir
+        if logger:
+            logger.warning("Could not set permissions %04o on %s (e.g. Windows)", mode, path_obj)
+def write_private_key_pem(path: str, key, passphrase: bytes, logger=None) -> None:
+    path_obj = Path(path)
+    path_obj.parent.mkdir(parents=True, exist_ok=True)
+    path_obj.write_bytes(private_key_to_pem_encrypted(key, passphrase))
+    _set_permissions(path_obj, 0o600, logger)
+    if logger:
+        logger.info("Saved private key to %s", str(path_obj.resolve()))
+def write_private_key_unencrypted(path: str, key, logger=None) -> None:
+    path_obj = Path(path)
+    path_obj.parent.mkdir(parents=True, exist_ok=True)
+    path_obj.write_bytes(private_key_to_pem_unencrypted(key))
+    _set_permissions(path_obj, 0o600, logger)
+    if logger:
+        logger.warning("Private key stored UNENCRYPTED at %s", str(path_obj.resolve()))
+def ensure_private_dir_permissions(dir_path: str, logger=None) -> None:
+    p = Path(dir_path)
+    p.mkdir(parents=True, exist_ok=True)
+    _set_permissions(p, 0o700, logger)
+def load_private_key_encrypted(path: str, passphrase: bytes):
+    data = Path(path).read_bytes()
+    return serialization.load_pem_private_key(data, password=passphrase)
+def load_certificate_pem(path: str) -> x509.Certificate:
+    data = Path(path).read_bytes()
+    return x509.load_pem_x509_certificate(data)
+def load_csr_pem(path: str) -> x509.CertificateSigningRequest:
+    data = Path(path).read_bytes()
+    return x509.load_pem_x509_csr(data)
