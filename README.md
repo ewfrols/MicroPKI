@@ -14,7 +14,7 @@
 
 ```bash
 # Клонировать репозиторий
-git clone https://github.com/dankapust/MicroPKI.git
+git clone https://github.com/ewfrols/MicroPKI.git
 cd MicroPKI
 
 # Создать виртуальное окружение
@@ -341,28 +341,6 @@ micropki repo serve --rate-limit 5 --rate-burst 10
 micropki ocsp serve --rate-limit 10 --rate-burst 20
 ```
 
----
-
-## Замечания по безопасности (Security Considerations)
-
-> ⚠️ **Данная система предназначена для образовательных целей и НЕ рекомендуется для использования в production без дополнительного усиления.**
-
-1. **Закрытые ключи конечных сущностей хранятся без шифрования.** Это сделано для удобства демонстрации. В production ключи должны храниться в HSM или с паролем.
-
-2. **Пароли Root/Intermediate CA читаются из файлов.** Файлы паролей должны иметь права `0600` и находиться вне репозитория. В production используйте секретные менеджеры (Vault, AWS KMS).
-
-3. **OCSP-ответчик не использует HTTPS.** Нет защиты транспортного уровня. В production OCSP-ответчик должен быть за reverse proxy с TLS.
-
-4. **Rate limiting базовый.** Token bucket per IP не защитит от распределённых атак. В production используйте CDN/WAF.
-
-5. **Целостность аудит-лога основана на хеш-цепочке.** Файл не подписан и может быть удалён. В production используйте append-only хранилища (WORM) или блокчейн.
-
-6. **Certificate Transparency — симуляция.** Нет дерева Меркла, публичного лога, или gossip-протокола. Используется простой текстовый лог.
-
-7. **Нет аутентификации на API `/request-cert`.** Любой может запросить сертификат. В production требуется mTLS, OAuth или API-ключи.
-
----
-
 ## Тестирование
 
 ### Запуск тестов
@@ -453,20 +431,6 @@ MicroPKI/
 ├── LICENSE                  # MIT
 └── README.md                # Этот файл
 ```
-
----
-
-## Ссылки и благодарности
-
-- [RFC 5280 — Internet X.509 PKI Certificate and CRL Profile](https://www.rfc-editor.org/rfc/rfc5280)
-- [RFC 6960 — Online Certificate Status Protocol (OCSP)](https://www.rfc-editor.org/rfc/rfc6960)
-- [RFC 6962 — Certificate Transparency](https://www.rfc-editor.org/rfc/rfc6962)
-- [Python cryptography library](https://cryptography.io/)
-- [FastAPI](https://fastapi.tiangolo.com/)
-- [OpenSSL](https://www.openssl.org/)
-
----
-
 ## Лицензия
 
 MIT License. См. файл [LICENSE](LICENSE).
